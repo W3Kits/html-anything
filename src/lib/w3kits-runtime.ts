@@ -23,6 +23,21 @@ export function isW3KitsLoginRequired(payload: unknown, status?: number): boolea
   return record.error === "login_required" || record.code === "login_required";
 }
 
+function getW3KitsParentOrigin(): string {
+  if (typeof window === "undefined") return "https://w3kits.com";
+  const url = new URL(window.location.href);
+  return url.searchParams.get("w3kitsParentOrigin") || "https://w3kits.com";
+}
+
 export function requestW3KitsLogin(reason = "ai_request") {
-  window.parent?.postMessage({ type: "W3KITS_AUTH_REQUIRED", reason, pluginId: W3KITS_PLUGIN_ID }, "*");
+  if (typeof window === "undefined" || window.parent === window) return;
+  window.parent.postMessage(
+    {
+      type: "W3KITS_AUTH_REQUIRED",
+      version: 1,
+      pluginId: W3KITS_PLUGIN_ID,
+      reason,
+    },
+    getW3KitsParentOrigin(),
+  );
 }
