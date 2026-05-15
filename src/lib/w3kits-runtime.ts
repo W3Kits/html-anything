@@ -24,5 +24,5 @@ export function isW3KitsLoginRequired(payload: unknown, status?: number): boolea
 }
 
 export function requestW3KitsLogin(reason = "ai_request") {
-  window.parent?.postMessage({ type: "w3kits:auth:required", reason, pluginId: W3KITS_PLUGIN_ID }, "*");
+  window.parent?.postMessage({ type: "W3KITS_AUTH_REQUIRED", reason, pluginId: W3KITS_PLUGIN_ID }, "*");
 }
