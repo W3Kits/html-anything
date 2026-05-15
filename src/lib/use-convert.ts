@@ -3,6 +3,9 @@
 import { useCallback } from "react";
 import { useStore } from "./store";
 import { summarizeForAgent } from "./parsers/auto";
+import { assemblePrompt } from "./templates/shared";
+import { getStaticTemplatePrompt } from "./templates";
+import { getW3KitsOpenAiBaseUrl, isW3KitsLoginRequired, requestW3KitsLogin, W3KITS_DEFAULT_MODEL } from "./w3kits-runtime";
 
 type ConvertReq = {
   taskId: string;
@@ -10,15 +13,145 @@ type ConvertReq = {
   templateId: string;
   content: string;
   format?: string;
-  /** Optional model override. "default" / undefined → no --model flag. */
   model?: string;
 };
 
-/** prefix logged when the run is sent in diff-edit mode (vs full regeneration) */
-const DIFF_LOG_PREFIX = "🔁 diff-edit 模式";
-
-// per-task abort controllers — multiple tasks can stream concurrently
+const DIFF_LOG_PREFIX = "diff-edit mode";
 const controllers = new Map<string, AbortController>();
+
+function buildEditPrompt(args: {
+  templateName: string;
+  templateAspect: string;
+  newContent: string;
+  oldContent: string;
+  oldHtml: string;
+  format: string;
+}): string {
+  return [
+    "You are performing a minimal-diff HTML edit, not regenerating from zero.",
+    "",
+    `Template style: ${args.templateName} (${args.templateAspect})`,
+    `Input format: ${args.format}`,
+    "",
+    "Hard rules:",
+    "1. Output only the complete updated HTML document. The first character must be < and the final content must end with </html>.",
+    "2. Do not wrap the answer in Markdown fences and do not include explanatory text.",
+    "3. Preserve the previous HTML head, CSS, layout, typography, colors, animations, and component structure unless the new content requires a local change.",
+    "4. Only change text, data, and repeated elements implied by the diff between old content and new content.",
+    "5. Do not invent facts or data.",
+    "",
+    "Old content:",
+    args.oldContent,
+    "",
+    "New content:",
+    args.newContent,
+    "",
+    "Existing HTML to edit and return in full:",
+    args.oldHtml,
+  ].join("\n");
+}
+
+function extractTextDelta(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "";
+  const choices = (payload as { choices?: unknown }).choices;
+  if (!Array.isArray(choices)) return "";
+  return choices.map((choice) => {
+    if (!choice || typeof choice !== "object") return "";
+    const delta = (choice as { delta?: { content?: unknown } }).delta;
+    if (typeof delta?.content === "string") return delta.content;
+    const text = (choice as { text?: unknown }).text;
+    return typeof text === "string" ? text : "";
+  }).join("");
+}
+
+function usageFromPayload(payload: unknown): Record<string, number> | null {
+  if (!payload || typeof payload !== "object") return null;
+  const usage = (payload as { usage?: unknown }).usage;
+  if (!usage || typeof usage !== "object") return null;
+  const record = usage as Record<string, unknown>;
+  return {
+    input_tokens: Number(record.prompt_tokens ?? record.input_tokens ?? 0),
+    output_tokens: Number(record.completion_tokens ?? record.output_tokens ?? 0),
+  };
+}
+
+async function readErrorPayload(response: Response): Promise<unknown> {
+  const text = await response.text().catch(() => "");
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text };
+  }
+}
+
+async function streamOpenAiCompletion(input: {
+  prompt: string;
+  model: string;
+  signal: AbortSignal;
+  onDelta: (text: string) => void;
+  onMeta: (key: string, value: unknown) => void;
+}): Promise<void> {
+  const response = await fetch(`${getW3KitsOpenAiBaseUrl()}/chat/completions`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    signal: input.signal,
+    body: JSON.stringify({
+      model: input.model,
+      stream: true,
+      messages: [
+        { role: "system", content: "You generate production-quality self-contained HTML documents. Return only HTML." },
+        { role: "user", content: input.prompt },
+      ],
+    }),
+  });
+
+  if (!response.ok || !response.body) {
+    const payload = await readErrorPayload(response);
+    if (isW3KitsLoginRequired(payload, response.status)) {
+      requestW3KitsLogin("ai_request");
+      throw new Error("Sign in required before using W3Kits AI.");
+    }
+    const message = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 400) : response.statusText;
+    throw new Error(`HTTP ${response.status}: ${message}`);
+  }
+
+  input.onMeta("model", input.model);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const consumeLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) return;
+    const data = trimmed.slice(5).trim();
+    if (!data || data === "[DONE]") return;
+    try {
+      const payload = JSON.parse(data) as unknown;
+      const usage = usageFromPayload(payload);
+      if (usage) input.onMeta("usage", usage);
+      const delta = extractTextDelta(payload);
+      if (delta) input.onDelta(delta);
+    } catch {
+      // Ignore malformed SSE chunks.
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || "";
+    for (const line of lines) consumeLine(line);
+  }
+  const rest = decoder.decode();
+  if (rest) buffer += rest;
+  if (buffer) {
+    for (const line of buffer.split(/\r?\n/)) consumeLine(line);
+  }
+}
 
 export function useConvert() {
   const cancel = useCallback((taskId: string) => {
@@ -44,9 +177,6 @@ export function useConvert() {
       const startedAt = Date.now();
       store.patchStatsFor(taskId, { startedAt });
 
-      // Inline `asset:<id>` placeholders (created by useUploadFile for
-      // images) back into real `data:image/...` URLs before the agent
-      // sees the prompt. Editor stays readable; agent gets the bytes.
       const taskWithAssets = store.tasks.find((t) => t.id === taskId);
       const assets = taskWithAssets?.assets ?? {};
       const inlinedContent = Object.keys(assets).length
@@ -56,109 +186,65 @@ export function useConvert() {
       const summary = summarizeForAgent(inlinedContent);
       const enrichedContent =
         summary.preview && summary.format !== "markdown" && summary.format !== "html" && summary.format !== "text"
-          ? `${summary.preview}\n\n--- 原始内容 ---\n${summary.raw}`
+          ? `${summary.preview}\n\n--- Raw content ---\n${summary.raw}`
           : summary.raw;
 
-      const useModel = req.model && req.model !== "default" ? req.model : undefined;
-      const binOverride = store.agentBinOverrides[req.agent]?.trim() || undefined;
+      const template = getStaticTemplatePrompt(req.templateId);
+      if (!template) {
+        store.pushLogFor(taskId, { kind: "error", text: `Unknown template: ${req.templateId}` });
+        store.setStatusFor(taskId, "error");
+        return;
+      }
 
-      // diff-edit mode: if the task was loaded from a sample (or the user has
-      // already converted once) AND the content has actually changed, we ship
-      // the previous (baseContent, baseHtml) so the API can ask the agent for
-      // minimal edits instead of a fresh regeneration. This preserves the
-      // design system AND saves output tokens.
       const task = store.tasks.find((t) => t.id === taskId);
-      const isEdit =
-        !!task?.baseHtml &&
-        !!task?.baseContent &&
-        task.baseContent.trim() !== req.content.trim();
-      const editPayload = isEdit
-        ? {
-            editFromHtml: task!.baseHtml!,
-            editFromContent: task!.baseContent!,
-          }
-        : null;
+      const isEdit = !!task?.baseHtml && !!task?.baseContent && task.baseContent.trim() !== req.content.trim();
+      const prompt = isEdit
+        ? buildEditPrompt({
+            templateName: template.zhName,
+            templateAspect: template.aspectHint,
+            newContent: enrichedContent,
+            oldContent: task!.baseContent!,
+            oldHtml: task!.baseHtml!,
+            format: req.format ?? summary.format,
+          })
+        : assemblePrompt({ body: template.body, content: enrichedContent, format: req.format ?? summary.format });
 
-      const payload = {
-        agent: req.agent,
-        templateId: req.templateId,
-        content: enrichedContent,
-        format: req.format ?? summary.format,
-        ...(useModel ? { model: useModel } : {}),
-        ...(binOverride ? { binOverride } : {}),
-        ...(editPayload ?? {}),
-      };
-
-      const sizeNote = `输入 ${enrichedContent.length.toLocaleString()} 字符 (${summary.format})`;
+      const model = req.model && req.model !== "default" ? req.model : W3KITS_DEFAULT_MODEL;
+      const sizeNote = `input ${enrichedContent.length.toLocaleString()} chars (${summary.format})`;
       store.pushLogFor(taskId, {
         kind: "info",
         text: isEdit
-          ? `${DIFF_LOG_PREFIX} · ${req.agent}${useModel ? ` · 模型 ${useModel}` : ""} · 模板 ${req.templateId} · ${sizeNote} · 原 HTML ${(task!.baseHtml!.length / 1024).toFixed(1)} KB`
-          : `准备调用 ${req.agent}${useModel ? ` · 模型 ${useModel}` : ""} · 模板 ${req.templateId} · ${sizeNote}`,
+          ? `${DIFF_LOG_PREFIX} · W3Kits AI · model ${model} · template ${req.templateId} · ${sizeNote}`
+          : `Preparing W3Kits AI · model ${model} · template ${req.templateId} · ${sizeNote}`,
       });
 
       try {
-        const res = await fetch("/api/convert", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+        await streamOpenAiCompletion({
+          prompt,
+          model,
           signal: ctl.signal,
+          onDelta: (text) => store.appendHtmlFor(taskId, text),
+          onMeta: (key, value) => {
+            if (key === "usage" && value && typeof value === "object") {
+              const u = value as Record<string, number>;
+              store.patchStatsFor(taskId, { inputTokens: u.input_tokens, outputTokens: u.output_tokens });
+            }
+            if (key === "model" && typeof value === "string") store.patchStatsFor(taskId, { model: value });
+            store.pushLogFor(taskId, { kind: "meta", elapsed: Date.now() - startedAt, text: formatMeta(key, value), data: value });
+          },
         });
-        if (!res.ok || !res.body) {
-          const text = await res.text().catch(() => res.statusText);
-          throw new Error(`HTTP ${res.status}: ${text}`);
-        }
-
-        const reader = res.body.getReader();
-        const dec = new TextDecoder();
-        let buf = "";
-        let lastEvent = "";
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, { stream: true });
-
-          let blank: number;
-          while ((blank = buf.indexOf("\n\n")) !== -1) {
-            const block = buf.slice(0, blank);
-            buf = buf.slice(blank + 2);
-            const lines = block.split("\n");
-            let event = lastEvent;
-            const dataLines: string[] = [];
-            for (const l of lines) {
-              if (l.startsWith("event:")) event = l.slice(6).trim();
-              else if (l.startsWith("data:")) dataLines.push(l.slice(5).trim());
-            }
-            lastEvent = event;
-            if (!dataLines.length) continue;
-            const dataStr = dataLines.join("\n");
-            let data: unknown;
-            try {
-              data = JSON.parse(dataStr);
-            } catch {
-              continue;
-            }
-            handleEvent(taskId, event, data, startedAt);
-          }
-        }
         const endedAt = Date.now();
-        useStore.getState().patchStatsFor(taskId, { endedAt, durationMs: endedAt - startedAt });
-        useStore.getState().setStatusFor(taskId, "done");
-        // record the just-finished (content, html) as the new diff-edit baseline
-        // so the user's next edit goes through diff mode instead of full regen
-        useStore.getState().commitBaseFor(taskId);
+        store.patchStatsFor(taskId, { endedAt, durationMs: endedAt - startedAt });
+        store.setStatusFor(taskId, "done");
+        store.commitBaseFor(taskId);
       } catch (err) {
         if ((err as Error)?.name === "AbortError") {
-          useStore.getState().pushLogFor(taskId, { kind: "info", text: "已取消" });
-          useStore.getState().setStatusFor(taskId, "idle");
+          store.pushLogFor(taskId, { kind: "info", text: "Canceled" });
+          store.setStatusFor(taskId, "idle");
           return;
         }
-        useStore.getState().pushLogFor(taskId, {
-          kind: "error",
-          text: (err as Error)?.message ?? String(err),
-        });
-        useStore.getState().setStatusFor(taskId, "error");
+        store.pushLogFor(taskId, { kind: "error", text: (err as Error)?.message ?? String(err) });
+        store.setStatusFor(taskId, "error");
       } finally {
         if (controllers.get(taskId) === ctl) controllers.delete(taskId);
       }
@@ -169,135 +255,14 @@ export function useConvert() {
   return { run, cancel };
 }
 
-function handleEvent(taskId: string, event: string, data: unknown, startedAt: number) {
-  const d = data as Record<string, unknown>;
-  const store = useStore.getState();
-  const elapsed = Date.now() - startedAt;
-  switch (event) {
-    case "start": {
-      const bin = String(d.bin ?? "");
-      const promptBytes = Number(d.promptBytes ?? 0);
-      store.patchStatsFor(taskId, { bin, promptBytes });
-      store.pushLogFor(taskId, {
-        kind: "start",
-        elapsed,
-        text: `spawn ${shortPath(bin)}  ·  prompt ${formatBytes(promptBytes)}`,
-        data: { argv: d.argv },
-      });
-      break;
-    }
-    case "delta": {
-      if (typeof d.text === "string") store.appendHtmlFor(taskId, d.text);
-      break;
-    }
-    case "html": {
-      // Agent decided to write the HTML to a file via the Write tool instead
-      // of streaming it. The parser rescued the file's content from the
-      // tool_use input — REPLACE the accumulated text (preamble + "已输出至 …"
-      // confirmation) so the preview shows the real document.
-      if (typeof d.text === "string") {
-        store.setHtmlFor(taskId, d.text);
-        const len = d.text.length;
-        const prev = useStore.getState().tasks.find((t) => t.id === taskId)?.stats;
-        store.patchStatsFor(taskId, {
-          outputBytes: len,
-          firstByteAt: prev?.firstByteAt ?? Date.now(),
-        });
-        store.pushLogFor(taskId, {
-          kind: "info",
-          elapsed,
-          text: `📄 从 Write 工具输入恢复 HTML (${len.toLocaleString()} 字节)`,
-        });
-      }
-      break;
-    }
-    case "meta": {
-      const key = String(d.key);
-      const value = d.value;
-      const patch: Partial<import("./store").RunStats> = {};
-      if (key === "model" && typeof value === "string") patch.model = value;
-      if (key === "duration_ms" && typeof value === "number") patch.durationMs = value;
-      if (key === "cost_usd" && typeof value === "number") patch.costUsd = value;
-      if (key === "usage" && value && typeof value === "object") {
-        const u = value as Record<string, number>;
-        patch.inputTokens = u.input_tokens;
-        patch.outputTokens = u.output_tokens;
-        patch.cacheReadTokens = u.cache_read_input_tokens;
-        patch.cacheCreateTokens = u.cache_creation_input_tokens;
-      }
-      if (Object.keys(patch).length) store.patchStatsFor(taskId, patch);
-      store.pushLogFor(taskId, {
-        kind: "meta",
-        elapsed,
-        text: formatMeta(key, value),
-        data: value,
-      });
-      break;
-    }
-    case "stderr": {
-      if (typeof d.text === "string")
-        store.pushLogFor(taskId, {
-          kind: "stderr",
-          elapsed,
-          text: String(d.text).trim(),
-        });
-      break;
-    }
-    case "raw": {
-      if (typeof d.text === "string")
-        store.pushLogFor(taskId, { kind: "raw", elapsed, text: String(d.text) });
-      break;
-    }
-    case "done": {
-      store.pushLogFor(taskId, {
-        kind: "done",
-        elapsed,
-        text: `agent 进程退出 (exit=${d.code ?? "?"})`,
-      });
-      break;
-    }
-    case "error": {
-      store.pushLogFor(taskId, {
-        kind: "error",
-        elapsed,
-        text: String(d.message ?? "agent error"),
-      });
-      break;
-    }
-  }
-}
-
-function formatBytes(n: number) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(2)} MB`;
-}
-
-function shortPath(p: string) {
-  if (!p) return "";
-  return p.replace(/^.*\//, "…/");
-}
-
 function formatMeta(key: string, value: unknown): string {
   if (key === "model") return `model = ${value}`;
-  if (key === "session") return `session = ${value}`;
-  if (key === "cwd") return `cwd = ${value}`;
-  if (key === "duration_ms") return `duration = ${value} ms`;
-  if (key === "cost_usd") return `cost ≈ $${(value as number).toFixed(4)}`;
-  if (key === "result") return `result = ${value}`;
-  if (key === "rate_limit" && value && typeof value === "object") {
-    const r = value as { status?: string; rateLimitType?: string };
-    return `rate-limit: ${r.status} (${r.rateLimitType})`;
-  }
   if (key === "usage" && value && typeof value === "object") {
     const u = value as Record<string, number>;
     const parts: string[] = [];
     if (u.input_tokens) parts.push(`in=${u.input_tokens}`);
     if (u.output_tokens) parts.push(`out=${u.output_tokens}`);
-    if (u.cache_read_input_tokens) parts.push(`cache-read=${u.cache_read_input_tokens}`);
-    if (u.cache_creation_input_tokens) parts.push(`cache-create=${u.cache_creation_input_tokens}`);
     return `usage: ${parts.join(" · ")}`;
   }
-  if (key === "thinking") return `thinking ${(value as string).slice(0, 80)}…`;
   return `${key}: ${typeof value === "object" ? JSON.stringify(value).slice(0, 120) : String(value)}`;
 }

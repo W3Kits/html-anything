@@ -6,7 +6,7 @@ import { useT, type DictKey } from "@/lib/i18n";
 import { previewHtml, extractHtml } from "@/lib/extract-html";
 import { isDeck } from "@/lib/deck";
 import { DeckViewer } from "./deck-viewer";
-import { DeployControl } from "./deploy-control";
+import { fetchTemplateExample } from "@/lib/templates";
 
 type PreviewTab = "preview" | "deck" | "code" | "log";
 
@@ -65,12 +65,10 @@ export function PreviewPane({
     }
     if (!templateId) return;
     let cancelled = false;
-    fetch(`/api/templates/${encodeURIComponent(templateId)}/example`)
-      .then((r) => (r.ok ? r.json() : null))
+    fetchTemplateExample(templateId)
       .then((data) => {
         if (cancelled) return;
-        const exampleHtml = (data?.html ?? "") as string;
-        setTemplateExample(exampleHtml);
+        setTemplateExample(data?.html ?? "");
       })
       .catch(() => {
         if (!cancelled) setTemplateExample("");
@@ -276,11 +274,6 @@ export function PreviewPane({
               >
                 {t("preview.present")} <span className="opacity-50">F</span>
               </button>
-            )}
-            {/* Publish-to-Vercel button — only meaningful once a Convert has
-                produced html, and only on tabs that show the user that html. */}
-            {(tab === "preview" || tab === "code") && status === "done" && html && (
-              <DeployControl />
             )}
             <StatusPill status={status} />
           </div>

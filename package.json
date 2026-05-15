@@ -5,7 +5,8 @@
   "license": "Apache-2.0",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "templates:gen": "node scripts/generate-static-templates.mjs",
+    "build": "pnpm templates:gen && next build && node scripts/prepare-dist.mjs",
     "start": "next start"
   },
   "dependencies": {

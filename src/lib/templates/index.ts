@@ -1,70 +1,24 @@
 /**
- * Client-facing types + hook for the disk-backed skill registry. The previous
- * 1600-line hardcoded `TEMPLATES` array has been replaced by a folder-per-skill
- * layout under `src/lib/templates/skills/`. Adding a new template = adding a
- * new folder with `SKILL.md` (+ optional `example.md` / `example.html`).
- *
- * - Server-only: `loader.ts` reads disk.
- * - Public API:  `/api/templates` returns the SkillMeta[] list, `/api/templates/:id/example` returns one skill's bundled example.
- * - Client:      `useTemplates()` below caches the fetch across all callers.
+ * Static template registry for the W3Kits iframe build. The source of truth is
+ * still upstream HTML Anything's src/lib/templates/skills/* folders;
+ * scripts/generate-static-templates.mjs compiles them into generated.ts before
+ * building the static plugin.
  */
 
 "use client";
 
-import { useEffect, useState } from "react";
-import type { SkillMeta as ServerSkillMeta, SkillExampleMeta } from "./loader";
+import { STATIC_TEMPLATES } from "./generated";
+import type { StaticTemplate, StaticTemplateExample } from "./static-types";
 
-export type TemplateDef = ServerSkillMeta;
-export type TemplateExampleMeta = SkillExampleMeta;
+export type TemplateDef = Omit<StaticTemplate, "body" | "exampleContent" | "exampleHtml">;
+export type TemplateExampleMeta = StaticTemplateExample;
 
-// Module-level cache + in-flight promise dedupes parallel callers across the
-// React tree. SWR / react-query would also work but adding a dep for one
-// endpoint is overkill — this is ~25 lines and behaves the same.
-let cache: TemplateDef[] | null = null;
-let inflight: Promise<TemplateDef[]> | null = null;
-type Listener = (v: TemplateDef[]) => void;
-const listeners = new Set<Listener>();
+const templates: TemplateDef[] = STATIC_TEMPLATES.map(({ body, exampleContent, exampleHtml, ...template }) => template);
 
-async function fetchTemplates(): Promise<TemplateDef[]> {
-  if (cache) return cache;
-  if (inflight) return inflight;
-  inflight = (async () => {
-    const res = await fetch("/api/templates");
-    if (!res.ok) throw new Error(`GET /api/templates → ${res.status}`);
-    const json = (await res.json()) as { templates: TemplateDef[] };
-    cache = json.templates;
-    for (const l of listeners) l(cache);
-    return cache;
-  })();
-  try {
-    return await inflight;
-  } finally {
-    inflight = null;
-  }
-}
-
-/** Returns the registry. `undefined` while loading; never throws. */
 export function useTemplates(): TemplateDef[] | undefined {
-  const [data, setData] = useState<TemplateDef[] | undefined>(cache ?? undefined);
-  useEffect(() => {
-    if (cache) {
-      setData(cache);
-      return;
-    }
-    const listener = (v: TemplateDef[]) => setData(v);
-    listeners.add(listener);
-    fetchTemplates().catch(() => {
-      // surface as empty — picker shows "no matches", caller can decide
-      setData([]);
-    });
-    return () => {
-      listeners.delete(listener);
-    };
-  }, []);
-  return data;
+  return templates;
 }
 
-/** Fetch one skill's bundled example (content + html). */
 export async function fetchTemplateExample(id: string): Promise<{
   id: string;
   name: string;
@@ -76,16 +30,33 @@ export async function fetchTemplateExample(id: string): Promise<{
   content: string;
   html: string;
 } | null> {
-  const res = await fetch(`/api/templates/${encodeURIComponent(id)}/example`);
-  if (!res.ok) return null;
-  return res.json();
+  const template = STATIC_TEMPLATES.find((item) => item.id === id);
+  if (!template?.example) return null;
+  return {
+    id: template.example.id,
+    name: template.example.name,
+    templateId: template.id,
+    format: template.example.format,
+    tagline: template.example.tagline,
+    desc: template.example.desc,
+    source: template.example.source,
+    content: template.exampleContent,
+    html: template.exampleHtml,
+  };
 }
 
-/** Look up one template by id from the in-memory cache. Returns `undefined` if not loaded yet. */
 export function getCachedTemplate(id: string): TemplateDef | undefined {
-  return cache?.find((t) => t.id === id);
+  return templates.find((t) => t.id === id);
 }
 
-// Re-export scenario constants so existing imports from `@/lib/templates`
-// keep working without touching every consumer.
+export function getStaticTemplatePrompt(id: string): { body: string; zhName: string; aspectHint: string } | undefined {
+  const template = STATIC_TEMPLATES.find((item) => item.id === id);
+  if (!template) return undefined;
+  return { body: template.body, zhName: template.zhName, aspectHint: template.aspectHint };
+}
+
+export function getTemplateExampleHtml(id: string): string {
+  return STATIC_TEMPLATES.find((item) => item.id === id)?.exampleHtml ?? "";
+}
+
 export { SCENARIO_KEYS, SCENARIO_ORDER, scenarioLabelKey } from "./scenarios";

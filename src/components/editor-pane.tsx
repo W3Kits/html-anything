@@ -10,7 +10,6 @@ import { useT, type DictKey } from "@/lib/i18n";
 import { DraftsMenu } from "./drafts-menu";
 import { SamplesGallery } from "./samples-gallery";
 import { FormatsGallery } from "./formats-gallery";
-import { AiPromptBar } from "./ai-prompt-bar";
 
 const TAB_KEY: Record<"text" | "formats" | "samples", DictKey> = {
   text: "editor.tab.text",
@@ -144,7 +143,6 @@ export function EditorPane() {
                 </div>
               )}
             </div>
-            <AiPromptBar />
           </div>
         )}
         {tab === "formats" && (

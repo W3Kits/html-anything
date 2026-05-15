@@ -6,6 +6,7 @@ import { useT } from "@/lib/i18n";
 import {
   useTemplates,
   fetchTemplateExample,
+  getTemplateExampleHtml,
   scenarioLabelKey,
   type TemplateDef,
 } from "@/lib/templates";
@@ -193,7 +194,7 @@ function SampleCard({
   const t = useT();
   const locale = useStore((s) => s.locale);
   const example = tpl.example;
-  const previewUrl = `/api/templates/${encodeURIComponent(tpl.id)}/preview`;
+  const previewHtml = getTemplateExampleHtml(tpl.id);
   return (
     <div
       className="group relative flex flex-col overflow-hidden rounded-2xl transition-all hover:-translate-y-0.5"
@@ -203,7 +204,7 @@ function SampleCard({
         boxShadow: "0 1px 0 var(--line-faint), 0 14px 32px -22px rgba(21,20,15,0.18)",
       }}
     >
-      {/* live HTML thumbnail (scaled-down iframe pointing at /api/.../preview) */}
+      {/* live HTML thumbnail from the generated static template registry. */}
       <div
         className="relative h-44 overflow-hidden"
         style={{ background: "var(--paper)", borderBottom: "1px solid var(--line-faint)" }}
@@ -219,8 +220,8 @@ function SampleCard({
         >
           <iframe
             title={tpl.id}
-            src={previewUrl}
-            sandbox=""
+            srcDoc={previewHtml}
+            sandbox="allow-scripts"
             loading="lazy"
             className="block h-full w-full"
             style={{ background: "#fff", border: "none" }}

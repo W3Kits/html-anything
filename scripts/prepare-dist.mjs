@@ -1,0 +1,11 @@
+import fs from 'node:fs';
+import path from 'node:path';
+const root = process.cwd();
+const out = path.join(root, 'out');
+const dist = path.join(root, 'dist');
+if (!fs.existsSync(out)) throw new Error('Missing Next static export directory: out');
+fs.rmSync(dist, { recursive: true, force: true });
+fs.cpSync(out, dist, { recursive: true });
+const rootIndex = path.join(dist, 'index.html');
+const nestedIndex = path.join(dist, 'app', 'index.html');
+if (!fs.existsSync(rootIndex) && fs.existsSync(nestedIndex)) fs.copyFileSync(nestedIndex, rootIndex);

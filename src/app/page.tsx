@@ -9,6 +9,7 @@ import { WelcomeModal } from "@/components/welcome-modal";
 import { SettingsModal } from "@/components/settings-modal";
 import { ConvertChip } from "@/components/convert-chip";
 import { useStore, type AgentInfo } from "@/lib/store";
+import { W3KITS_DEFAULT_MODEL } from "@/lib/w3kits-runtime";
 
 export default function Home() {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -32,20 +33,18 @@ export default function Home() {
   // is intact in localStorage.
   useEffect(() => {
     if (!hydrated) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/agents", { cache: "no-store" });
-        if (!res.ok) return;
-        const data = (await res.json()) as { agents: AgentInfo[] };
-        if (!cancelled) setAgents(data.agents);
-      } catch {
-        // Settings / Welcome modals will retry on open.
-      }
-    })();
-    return () => {
-      cancelled = true;
+    const w3kitsAgent: AgentInfo = {
+      id: "w3kits-openai",
+      label: "W3Kits AI",
+      vendor: "W3Kits",
+      available: true,
+      protocol: "stdin",
+      models: [{ id: "default", label: "Default" }, { id: W3KITS_DEFAULT_MODEL, label: W3KITS_DEFAULT_MODEL }],
     };
+    setAgents([w3kitsAgent]);
+    useStore.getState().setSelectedAgent("w3kits-openai");
+    useStore.getState().setAgentModel("w3kits-openai", W3KITS_DEFAULT_MODEL);
+    useStore.getState().setWelcomeAck(true);
   }, [hydrated, setAgents]);
 
   // Keep <html lang="…"> in sync with the user's locale so screen readers
@@ -58,7 +57,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated) return;
-    if (!welcomeAck || !selectedAgent) setWelcomeOpen(true);
+    setWelcomeOpen(false);
   }, [hydrated, welcomeAck, selectedAgent]);
 
   return (

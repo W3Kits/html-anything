@@ -12,11 +12,9 @@ import { useT, type DictKey } from "@/lib/i18n";
 
 type Props = { onClose: () => void; initialSection?: SectionId };
 
-type SectionId = "agent" | "deploy" | "language";
+type SectionId = "language";
 
 const SECTIONS: Array<{ id: SectionId; labelKey: DictKey; hintKey: DictKey }> = [
-  { id: "agent", labelKey: "settings.section.agent.label", hintKey: "settings.section.agent.hint" },
-  { id: "deploy", labelKey: "settings.section.deploy.label", hintKey: "settings.section.deploy.hint" },
   { id: "language", labelKey: "settings.section.language.label", hintKey: "settings.section.language.hint" },
 ];
 
@@ -48,7 +46,7 @@ const VENDOR_GRADIENT: Record<string, string> = {
   Qoder: "from-[#0891b2] to-[#7c3aed]",
 };
 
-export function SettingsModal({ onClose, initialSection = "agent" }: Props) {
+export function SettingsModal({ onClose, initialSection = "language" }: Props) {
   const [section, setSection] = useState<SectionId>(initialSection);
   const t = useT();
 
@@ -123,8 +121,6 @@ export function SettingsModal({ onClose, initialSection = "agent" }: Props) {
           </nav>
 
           <div className="flex-1 min-w-0 overflow-y-auto px-7 py-6">
-            {section === "agent" && <AgentSection />}
-            {section === "deploy" && <DeploySection />}
             {section === "language" && <LanguageSection />}
           </div>
         </div>
