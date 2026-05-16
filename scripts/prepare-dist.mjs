@@ -43,10 +43,23 @@ function sanitizeObjectPaths() {
   }
   rewriteStaticReferences(replacements);
 }
+function writeW3KitsMetadata() {
+  const w3kitsDir = path.join(dist, '__w3kits');
+  fs.mkdirSync(w3kitsDir, { recursive: true });
+  const icon = [
+    path.join(dist, 'window.svg'),
+    path.join(dist, 'globe.svg'),
+    path.join(dist, 'file.svg'),
+  ].find((candidate) => fs.existsSync(candidate));
+  if (!icon) throw new Error('Missing HTML Anything icon in dist.');
+  fs.copyFileSync(icon, path.join(w3kitsDir, 'icon.svg'));
+}
+
 if (!fs.existsSync(out)) throw new Error('Missing Next static export directory: out');
 fs.rmSync(dist, { recursive: true, force: true });
 fs.cpSync(out, dist, { recursive: true });
 sanitizeObjectPaths();
+writeW3KitsMetadata();
 const rootIndex = path.join(dist, 'index.html');
 const nestedIndex = path.join(dist, 'app', 'index.html');
 if (!fs.existsSync(rootIndex) && fs.existsSync(nestedIndex)) fs.copyFileSync(nestedIndex, rootIndex);
