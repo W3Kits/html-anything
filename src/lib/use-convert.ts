@@ -5,7 +5,7 @@ import { useStore } from "./store";
 import { summarizeForAgent } from "./parsers/auto";
 import { assemblePrompt } from "./templates/shared";
 import { getStaticTemplatePrompt } from "./templates";
-import { getW3KitsOpenAiBaseUrl, isW3KitsLoginRequired, requestW3KitsLogin, W3KITS_DEFAULT_MODEL } from "./w3kits-runtime";
+import { getW3KitsOpenAiBaseUrl, getW3KitsOpenAiHeaders, isW3KitsLoginRequired, requestW3KitsLogin, W3KITS_DEFAULT_MODEL } from "./w3kits-runtime";
 
 type ConvertReq = {
   taskId: string;
@@ -95,7 +95,7 @@ async function streamOpenAiCompletion(input: {
   const response = await fetch(`${getW3KitsOpenAiBaseUrl()}/chat/completions`, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: await getW3KitsOpenAiHeaders(),
     signal: input.signal,
     body: JSON.stringify({
       model: input.model,
