@@ -1,7 +1,7 @@
 {
-  "name": "html-anything",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@w3kits/plugin-html-anything",
+  "version": "0.1.8",
+  "private": false,
   "license": "Apache-2.0",
   "scripts": {
     "dev": "next dev",
@@ -35,5 +35,23 @@
     "@types/react-dom": "^19",
     "tailwindcss": "^4",
     "typescript": "^5"
-  }
+  },
+  "description": "W3Kits HTML Anything plugin built from nexu-io/html-anything.",
+  "files": [
+    "dist",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/W3Kits/html-anything.git"
+  },
+  "bugs": {
+    "url": "https://github.com/W3Kits/html-anything/issues"
+  },
+  "homepage": "https://github.com/W3Kits/html-anything#readme"
 }
