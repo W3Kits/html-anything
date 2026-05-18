@@ -1,6 +1,6 @@
 {
   "name": "@w3kits-com/plugin-html-anything",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": false,
   "license": "Apache-2.0",
   "scripts": {

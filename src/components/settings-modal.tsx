@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   LOCALES,
   LOCALE_LABEL,
@@ -9,12 +9,14 @@ import {
   type Locale,
 } from "@/lib/store";
 import { useT, type DictKey } from "@/lib/i18n";
+import { W3KITS_DEFAULT_MODEL } from "@/lib/w3kits-runtime";
 
 type Props = { onClose: () => void; initialSection?: SectionId };
 
-type SectionId = "language";
+type SectionId = "agent" | "language";
 
 const SECTIONS: Array<{ id: SectionId; labelKey: DictKey; hintKey: DictKey }> = [
+  { id: "agent", labelKey: "settings.section.agent.label", hintKey: "settings.section.agent.hint" },
   { id: "language", labelKey: "settings.section.language.label", hintKey: "settings.section.language.hint" },
 ];
 
@@ -46,7 +48,21 @@ const VENDOR_GRADIENT: Record<string, string> = {
   Qoder: "from-[#0891b2] to-[#7c3aed]",
 };
 
-export function SettingsModal({ onClose, initialSection = "language" }: Props) {
+function w3kitsAgent(): AgentInfo {
+  return {
+    id: "w3kits-openai",
+    label: "W3Kits AI",
+    vendor: "W3Kits",
+    available: true,
+    protocol: "stdin",
+    models: [
+      { id: "default", label: "Default" },
+      { id: W3KITS_DEFAULT_MODEL, label: W3KITS_DEFAULT_MODEL },
+    ],
+  };
+}
+
+export function SettingsModal({ onClose, initialSection = "agent" }: Props) {
   const [section, setSection] = useState<SectionId>(initialSection);
   const t = useT();
 
@@ -121,6 +137,7 @@ export function SettingsModal({ onClose, initialSection = "language" }: Props) {
           </nav>
 
           <div className="flex-1 min-w-0 overflow-y-auto px-7 py-6">
+            {section === "agent" && <AgentSection />}
             {section === "language" && <LanguageSection />}
           </div>
         </div>
@@ -142,43 +159,22 @@ function AgentSection() {
   const setSelectedAgent = useStore((s) => s.setSelectedAgent);
   const setAgents = useStore((s) => s.setAgents);
   const setAgentModel = useStore((s) => s.setAgentModel);
-  const setAgentBinOverride = useStore((s) => s.setAgentBinOverride);
   const agents = useStore((s) => s.agents);
   const selected = useStore((s) => s.selectedAgent);
   const agentModels = useStore((s) => s.agentModels);
-  const agentBinOverrides = useStore((s) => s.agentBinOverrides);
   const t = useT();
 
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const load = async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const res = await fetch("/api/agents", { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { agents: AgentInfo[] };
-      setAgents(data.agents);
-      const installed = data.agents.filter((a) => a.available);
-      if (!installed.find((a) => a.id === selected) && installed.length) {
-        setSelectedAgent(installed[0].id);
-      }
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "detection failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    if (!agents.length) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const agent = w3kitsAgent();
+    setAgents([agent]);
+    if (selected !== agent.id) setSelectedAgent(agent.id);
+    if ((agentModels[agent.id] ?? "default") === "default") {
+      setAgentModel(agent.id, W3KITS_DEFAULT_MODEL);
+    }
+  }, [agentModels, selected, setAgentModel, setAgents, setSelectedAgent]);
 
-  const installed = useMemo(() => agents.filter((a) => a.available), [agents]);
-  const missing = useMemo(() => agents.filter((a) => !a.available), [agents]);
-  const selectedAgent = installed.find((a) => a.id === selected);
+  const installed = agents.length ? agents.filter((a) => a.available) : [w3kitsAgent()];
+  const selectedAgent = installed.find((a) => a.id === selected) ?? installed[0];
   const selectedModelId = selected ? agentModels[selected] ?? "default" : "default";
 
   return (
@@ -190,23 +186,7 @@ function AgentSection() {
             {t("settings.agent.subtitle")}
           </p>
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="text-xs text-[var(--ink-faint)] hover:text-[var(--ink)] disabled:opacity-50 transition-colors shrink-0"
-        >
-          {loading ? t("welcome.scanning") : t("welcome.rescan")}
-        </button>
       </div>
-
-      {err && (
-        <div
-          className="mb-4 rounded-xl px-4 py-3 text-sm"
-          style={{ background: "var(--coral-soft)", color: "var(--coral)" }}
-        >
-          {t("welcome.detectionFailed")}: {err}
-        </div>
-      )}
 
       {installed.length > 0 && (
         <>
@@ -232,38 +212,6 @@ function AgentSection() {
           modelId={selectedModelId}
           onPick={(id) => setAgentModel(selectedAgent.id, id)}
         />
-      )}
-
-      {selectedAgent && (
-        <CustomBinPath
-          agent={selectedAgent}
-          value={agentBinOverrides[selectedAgent.id] ?? ""}
-          onChange={(p) => setAgentBinOverride(selectedAgent.id, p)}
-        />
-      )}
-
-      {missing.length > 0 && (
-        <>
-          <div className="mt-6 mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--ink-faint)]">
-            {t("welcome.notInstalled", { n: missing.length })}
-          </div>
-          <div className="grid grid-cols-1 gap-2">
-            {missing.map((a) => (
-              <MissingCard key={a.id} agent={a} />
-            ))}
-          </div>
-        </>
-      )}
-
-      {!loading && agents.length === 0 && (
-        <div
-          className="rounded-2xl border-2 border-dashed py-10 px-6 text-center"
-          style={{ borderColor: "var(--line)" }}
-        >
-          <div className="text-3xl mb-2">🪞</div>
-          <p className="text-sm font-medium text-[var(--ink-soft)]">{t("welcome.noAgentsTitle")}</p>
-          <p className="mt-2 text-xs text-[var(--ink-mute)]">{t("welcome.noAgentsBody")}</p>
-        </div>
       )}
     </div>
   );
